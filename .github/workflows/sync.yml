@@ -1,0 +1,69 @@
+name: Sync Upstream Repo and Releases
+
+on:
+  push:
+    branches:
+      - update
+      - main                      # Triggers whenever you push to main
+  workflow_dispatch:              # Allows you to trigger it manually from the Actions tab
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write             # Required to create releases and push code/tags
+
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync Git Code, Branches, and Tags
+        env:
+          UPSTREAM_URL: "https://github.com/hydralauncher/hydra.git"
+          # UPSTREAM_URL: "https://github.com/original-owner/original-repo.git"
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Add upstream and fetch all branches/tags
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch upstream --tags
+
+          # Push all updated branches and tags to your repo
+          git push origin 'refs/remotes/upstream/*:refs/heads/*' --force
+          git push origin --tags --force
+
+      - name: Sync Releases and Assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_REPO: "hydralauncher/hydra"
+          # UPSTREAM_REPO: "original-owner/original-repo"
+        run: |
+          # Fetch all release tag names from the upstream repo
+          UPSTREAM_RELEASES=$(gh release list --repo "$UPSTREAM_REPO" --limit 100 --json tagName -q '.[].tagName')
+
+          for TAG in $UPSTREAM_RELEASES; do
+            # Check if release already exists in your repo
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              echo "Release $TAG already exists in target repo. Skipping..."
+              continue
+            fi
+
+            echo "Migrating release: $TAG"
+            mkdir -p "assets_$TAG"
+
+            # Download upstream release assets
+            gh release download "$TAG" --repo "$UPSTREAM_REPO" --dir "assets_$TAG" || true
+
+            # Create release in your repo with assets attached
+            if [ -z "$(ls -A assets_$TAG 2>/dev/null)" ]; then
+              gh release create "$TAG" --title "$TAG" --notes "Synced release $TAG"
+            else
+              gh release create "$TAG" ./assets_$TAG/* --title "$TAG" --notes "Synced release $TAG"
+            fi
+
+            rm -rf "assets_$TAG"
+          done
